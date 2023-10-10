@@ -10,7 +10,6 @@ from argparse import Namespace
 import numpy as np
 import torch
 from sklearn.metrics import recall_score, precision_score, average_precision_score, classification_report, f1_score
-import torch.nn as nn
 
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from tqdm import tqdm, trange
@@ -131,9 +130,7 @@ def train(args, train_dataset, eval_dataset, model: PreTrainedModel, tokenizer: 
             model.train()
             for loss, _, _ in run_batch_fn_train(args, model, batch, global_step=global_step):
                 step += 1
-                if step > 20:
-                    # break
-                    pass
+
                 total_log_loss += loss.item()
 
                 if args.gradient_accumulation_steps > 1:
@@ -225,9 +222,6 @@ def evaluate(args, eval_dataset, model: PreTrainedModel, run_batch_fn, desc="") 
                 all_labels.append(labels.detach().cpu().numpy())
             eval_loss += loss.mean().item()
         nb_eval_steps += 1
-        if nb_eval_steps > 20:
-            # break
-            pass
 
     eval_loss = eval_loss / nb_eval_steps
 
@@ -384,7 +378,7 @@ def main():
     dataset_args.debug = args.debug
 
     # Setup CUDA & GPU
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     args.device = device
 
     # Set seed
@@ -408,7 +402,6 @@ def main():
         if args.checkpoint is not None:
             model = model_class.from_pretrained(args.checkpoint)
             tokenizer = AutoTokenizer.from_pretrained(args.checkpoint)
-            # model = nn.DataParallel(model)
             model.to(args.device)
         else:
             config = AutoConfig.from_pretrained(args.model_name_or_path)
@@ -417,9 +410,7 @@ def main():
             tokenizer.model_max_length = min(1024, tokenizer.model_max_length)
             model = model_class.from_pretrained(args.model_name_or_path, config=config)
             model.resize_token_embeddings(len(tokenizer))
-            # model = nn.DataParallel(model).to("cuda")
             model.to(args.device)
-            
         logger.info("Training/evaluation parameters %s", args)
 
         # load datasets and train the model

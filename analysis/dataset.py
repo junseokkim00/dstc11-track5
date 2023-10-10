@@ -4,7 +4,6 @@ import logging
 from collections import defaultdict
 from itertools import chain
 
-import pdb
 import torch
 from tqdm import tqdm
 
@@ -93,6 +92,7 @@ class BaseDataset(torch.utils.data.Dataset):
             tokenized_snippets[key]["token_ids"] = tokenized_knowledge[
                 : self.args.knowledge_max_tokens
             ]
+
         return tokenized_snippets
 
     def _get_snippet_list(self):
@@ -142,14 +142,9 @@ class BaseDataset(torch.utils.data.Dataset):
 
     def _create_examples(self):
         """Creating examples for model training and evaluation"""
-        cnt = 0
         logger.info("Creating examples")
         self.examples = []
         for dialog in tqdm(self.dialogs, disable=False, desc="creating examples"):
-            cnt +=1
-            if cnt>300:
-                # break
-                pass
             if self.args.debug > 0 and len(self.examples) >= self.args.debug:
                 break
             dialog_id = dialog["id"]

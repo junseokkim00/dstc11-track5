@@ -2,6 +2,7 @@ import copy
 
 import torch
 import logging
+import pdb
 
 logger = logging.getLogger(__name__)
 
@@ -35,58 +36,68 @@ def run_batch_detection_eval(args, model, batch, **kwargs):
     return cls_loss, cls_logits, labels
 
 
-def run_batch_selection_train(args, model, batch, **kwargs):
+def run_batch_selection_aug_train(args, model, batch, **kwargs):
     """Run batch knowledge selection during training time"""
-    candidates_per_forward = args.max_candidates_per_forward_train
     batch = tuple(
-        input_tensor.to(args.device)
-        for input_tensor in batch
-        if isinstance(input_tensor, torch.Tensor)
+        input_tensor for input_tensor in batch if isinstance(input_tensor, torch.Tensor)
     )
-    input_ids, token_type_ids, attention_mask, labels = batch
+    input_ids, token_type_ids, attention_mask, target_ids = batch
+
+    candidates_per_forward = args.max_candidates_per_forward_eval
+
     for index in range(0, input_ids.size(0), candidates_per_forward):
         model_outputs = model(
-            input_ids=input_ids[index : index + candidates_per_forward],
-            token_type_ids=None
-            if model.base_model_prefix in ["roberta"]
-            else token_type_ids[index : index + candidates_per_forward],
-            attention_mask=attention_mask[index : index + candidates_per_forward],
-            labels=labels[index : index + candidates_per_forward],
+            input_ids=input_ids[index : index + candidates_per_forward].to(args.device),
+            attention_mask=attention_mask[index : index + candidates_per_forward].to(
+                args.device
+            ),
+            labels=target_ids[index : index + candidates_per_forward].to(args.device),
         )
         loss, logits = model_outputs[0].mean(), model_outputs[1]
         yield loss, logits, None
 
 
-def run_batch_selection_eval(args, model, batch, **kwargs):
+def run_batch_selection_aug_eval(args, model, batch, **kwargs):
     """Run batch knowledge selection during evaluation time"""
     # return: loss, logits, labels
     candidates_per_forward = args.max_candidates_per_forward_eval
-    batch = tuple(
-        input_tensor.to(args.device)
-        for input_tensor in batch
-        if isinstance(input_tensor, torch.Tensor)
-    )
-    input_ids, token_type_ids, attention_mask, labels = batch
-    original_labels = copy.deepcopy(labels)
+    dial_ids = batch[-1]["dialog_ids"]
 
-    all_logits = []
+    batch = tuple(
+        input_tensor for input_tensor in batch if isinstance(input_tensor, torch.Tensor)
+    )
+    input_ids, token_type_ids, attention_mask, target_ids = batch
+    original_labels = copy.deepcopy(target_ids)
+
+    all_texts = []
     eval_loss = 0
     for index in range(0, input_ids.size(0), candidates_per_forward):
         model_outputs = model(
-            input_ids=input_ids[index : index + candidates_per_forward],
-            token_type_ids=None
-            if model.base_model_prefix in ["roberta"] # TODO here when parallel
-            else token_type_ids[index : index + candidates_per_forward],
-            attention_mask=attention_mask[index : index + candidates_per_forward],
-            labels=labels[index : index + candidates_per_forward],
+            input_ids=input_ids[index : index + candidates_per_forward].to(args.device),
+            attention_mask=attention_mask[index : index + candidates_per_forward].to(
+                args.device
+            ),
+            labels=target_ids[index : index + candidates_per_forward].to(args.device),
         )
         eval_loss += model_outputs.loss.mean() * len(
             input_ids[index : index + candidates_per_forward]
         )
-        logits = model_outputs.logits
-        all_logits.append(logits.detach())
-    all_logits = torch.cat(all_logits, dim=0)
-    return eval_loss, all_logits, original_labels
+        generated = model.module.generate(
+            input_ids[index : index + candidates_per_forward].to("cuda"),
+            num_beams=5,
+            early_stopping=True,
+        )
+        dial_id = dial_ids[index : index + candidates_per_forward]
+        text_tuple = [
+            (k, v)
+            for (k, v) in zip(
+                dial_id,
+                generated,
+            )
+        ]
+        all_texts.extend(text_tuple)
+
+    return eval_loss, all_texts, original_labels
 
 
 def run_batch_generation_train(args, model, batch, **kwargs):
@@ -108,7 +119,7 @@ def run_batch_generation_eval(args, model, batch, **kwargs):
     model_outputs = model(
         input_ids=input_ids, attention_mask=attention_mask, labels=lm_labels
     )
-    loss = model_outputs[0]
+    loss = model_outputs[0].mean()
     lm_logits = model_outputs[1]
     return loss, lm_logits, torch.tensor([])
 

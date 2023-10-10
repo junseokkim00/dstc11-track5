@@ -4,6 +4,7 @@ import logging
 from collections import defaultdict
 from itertools import chain
 
+import csv
 import pdb
 import torch
 from tqdm import tqdm
@@ -11,7 +12,20 @@ from tqdm import tqdm
 from .utils.data import pad_ids, truncate_sequences
 from scripts.dataset_walker import DatasetWalker
 from scripts.knowledge_reader import KnowledgeReader
+from sklearn.feature_extraction.text import TfidfVectorizer
+import numpy as np
+import pandas as pd
+import re
+import nltk
+from nltk.corpus import stopwords, wordnet
 
+from nltk.stem import WordNetLemmatizer
+
+stop_words = stopwords.words("english")
+stop_words.extend(["wa", "would", "also", "Also"])
+nltk.download("wordnet")
+nltk.download("omw-1.4")
+nltk.download("averaged_perceptron_tagger")
 logger = logging.getLogger(__name__)
 
 SPECIAL_TOKENS = {
@@ -74,11 +88,62 @@ class BaseDataset(torch.utils.data.Dataset):
             tokenized_dialogs.append(dialog)
         return tokenized_dialogs
 
+    def _clean_text_noun(self, text):
+        text = text.lower()
+        text = text.split()
+        temp = []
+        for txt in text:
+            txt = [
+                word
+                for (word, pos) in nltk.pos_tag(nltk.word_tokenize(txt))
+                if pos[0] == "N"
+            ]
+            temp.append(" ".join(txt))
+        text = temp
+        # text = [ps.lemmatize(word) for word in text]
+        text = [word for word in text if not word in set(stop_words)]
+        text = " ".join(text)
+        return text
+
+    def _clean_text_lem(self, text):
+        text = re.sub("[^a-zA-Z]", " ", text)
+        ps = WordNetLemmatizer()
+
+        text = text.lower()
+        text = text.split()
+        text = [ps.lemmatize(word) for word in text]
+        text = [word for word in text if not word in set(stop_words)]
+        text = " ".join(text)
+        return text
+
+    def _tf_idf_vec(self, corpus, n_gram):
+        cv = TfidfVectorizer(ngram_range=(1, n_gram))
+        corpus = cv.fit_transform(corpus)
+        avg = corpus.mean(axis=0)
+        avg = pd.DataFrame(avg, columns=cv.get_feature_names()).T
+        avg = avg.rename(columns={0: "score"})
+        avg["word"] = avg.index
+        avg = avg.sort_values("score", ascending=False)
+        key_words = avg[:]["word"].tolist()
+        corpus_dense = corpus.todense().tolist()
+        # dense_sort = np.sort(corpus_dense, axis=1)[:,-3:]
+        indexs = []
+        for dense_list in tqdm(corpus_dense):
+            dense_list = [(i, v) for (i, v) in enumerate(dense_list)]
+            sorted_list = sorted(dense_list, key=lambda item: -item[1])[:3]
+            indexs.append([k for k, v in sorted_list])
+
+        return indexs, cv.get_feature_names(), key_words
+
     def _prepare_knowledge(self):
+
         """Tokenize and encode the knowledge snippets"""
         self.knowledge_docs = self._get_snippet_list()
+        corpus = []
 
         tokenized_snippets = defaultdict(dict)
+        token = "<knowledge_sep> "
+
         for snippet_id, snippet in enumerate(self.knowledge_docs):
             key = "{}__{}__{}".format(
                 snippet["domain"], str(snippet["entity_id"]) or "", snippet["doc_id"]
@@ -90,9 +155,41 @@ class BaseDataset(torch.utils.data.Dataset):
             tokenized_knowledge = self.tokenizer.convert_tokens_to_ids(
                 self.tokenizer.tokenize(knowledge)
             )
+            place_name = knowledge[: knowledge.index(token)].strip().lower()
+            knowledge = knowledge.replace(place_name, "").lower()
+            corpus.append(knowledge[knowledge.index(token) + len(token) :])
             tokenized_snippets[key]["token_ids"] = tokenized_knowledge[
                 : self.args.knowledge_max_tokens
             ]
+        # corpus1 = [self._clean_text_noun(t) for t in corpus]
+        corpus2 = [self._clean_text_lem(t) for t in corpus]
+        # index, words = self._tf_idf_vec(corpus1, 1)
+        # onegram = [words[i.item()] for i in index]
+        index, words, keywords = self._tf_idf_vec(corpus2, 3)
+        threegram = []
+        for idxs in index:
+            temp = []
+            for idx in idxs:
+                if words[idx] in keywords:
+                    temp.append(words[idx])
+            if len(temp) == 0:
+                temp = ["None"]
+            threegram.append(temp)
+
+        import csv
+
+        f = open("test.csv", "w", encoding="utf-8", newline="")
+        wr = csv.writer(f)
+        for cor, three in zip(corpus, threegram):
+            wr.writerow([three, cor])
+        f.close()
+        for key, gram in zip(list(tokenized_snippets.keys()), threegram):
+            adding_text = "keywords : " + " ".join(gram)
+            adding_text = self.tokenizer.convert_tokens_to_ids(
+                self.tokenizer.tokenize(adding_text)
+            )
+            tokenized_snippets[key]["token_ids"] += adding_text
+
         return tokenized_snippets
 
     def _get_snippet_list(self):
@@ -142,14 +239,9 @@ class BaseDataset(torch.utils.data.Dataset):
 
     def _create_examples(self):
         """Creating examples for model training and evaluation"""
-        cnt = 0
         logger.info("Creating examples")
         self.examples = []
         for dialog in tqdm(self.dialogs, disable=False, desc="creating examples"):
-            cnt +=1
-            if cnt>300:
-                # break
-                pass
             if self.args.debug > 0 and len(self.examples) >= self.args.debug:
                 break
             dialog_id = dialog["id"]
@@ -379,7 +471,6 @@ class KnowledgeSelectionDataset(BaseDataset):
             instance, _ = self.build_input_from_segments(cand, example["history"])
             this_inst["input_ids"].append(instance["input_ids"])
             this_inst["token_type_ids"].append(instance["token_type_ids"])
-
         return this_inst
 
     def build_input_from_segments(self, knowledge, history):
@@ -394,6 +485,7 @@ class KnowledgeSelectionDataset(BaseDataset):
 
         else:
             sequence_with_speaker = [self.speaker2] + history[0]
+        # sequence = [[self.cls]] + history[:-1] + [history[-1]]
 
         # sequence_with_speaker = [
         #     [self.speaker1 if (len(sequence) - i) % 2 == 0 else self.speaker2] + s

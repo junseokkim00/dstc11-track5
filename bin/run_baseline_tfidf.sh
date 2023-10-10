@@ -16,12 +16,12 @@
 
 # training and validation for knowledge selection
 model_name=microsoft/deberta-v3-base
-model_name_exp=deberta-v3-base-typo
-cuda_id=2
+model_name_exp=deberta-v3-base-tfidf2_history
+cuda_id=1
 
-CUDA_VISIBLE_DEVICES=${cuda_id} python baseline.py \
+CUDA_VISIBLE_DEVICES=${cuda_id} python tfidf.py \
         --task selection \
-        --dataroot Typo\
+        --dataroot data \
         --model_name_or_path ${model_name} \
         --negative_sample_method "oracle" \
         --knowledge_file knowledge.json \
@@ -42,5 +42,3 @@ CUDA_VISIBLE_DEVICES=${cuda_id} python baseline.py \
 #         --history_max_tokens 256 --knowledge_max_tokens 256 \
 #         --knowledge_file knowledge.json \
 #         --exp_name rg-review-${model_name_exp}-baseline
-
-# 7,8
